@@ -1,0 +1,7 @@
+run.txt
+.venv/
+terraform.tfstate
+terraform.tfstate.backup
+terraform/lambda.zip
+terraform/.terraform
+terraform/.terraform.lock.hcl

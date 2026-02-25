@@ -1,0 +1,166 @@
+services:
+  localstack:
+    image: localstack/localstack:latest
+    ports:
+      - "4566:4566"
+    container_name: localstack
+    environment:
+      SERVICES: s3,glue,lambda,iam,sts,logs
+      DEBUG: "1"
+      AWS_DEFAULT_REGION: ${AWS_REGION}
+      LAMBDA_DOCKER_NETWORK: lakehouse-pipeline-aws-localstack_localstack-network
+      DNS_ADDRESS: 127.0.0.1
+    networks:
+      - localstack-network
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  spark-master:
+    build: 
+      context: .
+      dockerfile: Dockerfile.spark
+    container_name: spark-master
+    env_file:
+      - .env
+    networks:
+      - localstack-network
+    volumes:
+      - ./spark-jobs:/opt/spark/jobs
+    environment:
+      - SPARK_MASTER_HOST=spark-master
+      - SPARK_LOCAL_IP=spark-master
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_DEFAULT_REGION=${AWS_REGION}
+    command: >
+      sh -c "python3 /opt/spark/jobs/spark_runner.py & 
+             /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master"
+    ports:
+      - "8080:8080"
+      - "7077:7077"
+      - "5000:5000"
+
+  spark-worker:
+    build: 
+      context: .
+      dockerfile: Dockerfile.spark
+    depends_on:
+      - spark-master
+    env_file:
+      - .env
+    container_name: spark-worker
+    networks:
+      - localstack-network
+    volumes:
+      - ./spark-jobs:/opt/spark/jobs
+    environment:
+      - SPARK_MASTER=spark://spark-master:7077
+      - SPARK_WORKER_CORES=1
+      - SPARK_WORKER_MEMORY=1G
+      - SPARK_LOCAL_IP=spark-worker # Tells worker to identify as this name
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_DEFAULT_REGION=${AWS_REGION}
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker", "spark://spark-master:7077"]
+    ports:
+      - "8081:8081"
+  
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: hive
+      POSTGRES_PASSWORD: hive
+      POSTGRES_DB: metastore
+    ports:
+      - "5432:5432"
+    container_name: postgres
+    networks:
+      - localstack-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hive -d metastore"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: always
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+
+  hive-metastore:
+    build:
+      context: .
+      dockerfile: Dockerfile.hive
+    container_name: hive-metastore
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - localstack-network
+    volumes:
+      # THIS IS THE CRITICAL ADDITION
+      - ./hive-site.xml:/opt/hive/conf/hive-site.xml
+    environment:
+      SERVICE_NAME: "metastore"
+      # DB Configs (The entrypoint script actually reads these to init the DB)
+      HIVE_METASTORE_DB_TYPE: "postgres"
+      HIVE_METASTORE_JDBC_URL: "jdbc:postgresql://postgres:5432/metastore"
+      HIVE_METASTORE_USER: "hive"
+      HIVE_METASTORE_PASSWORD: "hive"
+      
+      # Schema Init (Keep these so the DB tables are created automatically)
+      AUTO_SCHEMA_INIT: "true" 
+      SCHEMA_COMMAND: "initSchema"
+    ports:
+      - "9083:9083"
+
+
+  # -------------------------
+  # Trino
+  # -------------------------
+  trino:
+    image: trinodb/trino:444
+    container_name: trino
+    depends_on:
+      - hive-metastore
+    networks:
+      - localstack-network
+    ports:
+      - "8088:8080"
+    volumes:
+      - ./trino/etc/catalog/iceberg.properties:/etc/trino/catalog/iceberg.properties
+      - ./trino/etc/config.properties:/etc/trino/config.properties
+      - ./trino/etc/jvm.config:/etc/trino/jvm.config
+    environment:
+      JAVA_TOOL_OPTIONS: "-Xmx2G"
+
+
+  # -------------------------
+  # Metabase (BI tool)
+  # -------------------------
+  metabase:
+    image: metabase/metabase:latest
+    container_name: metabase
+    depends_on:
+      postgres:
+        condition: service_healthy
+      trino:
+        condition: service_started
+    ports:
+      - "3000:3000"
+    networks:
+      - localstack-network
+    environment:
+      MB_DB_TYPE: postgres
+      MB_DB_DBNAME: metabase_db
+      MB_DB_PORT: 5432
+      MB_DB_USER: hive
+      MB_DB_PASS: hive
+      MB_DB_HOST: postgres
+      MB_APPLICATION_DB_MAX_RETRIES: 10
+  
+networks:
+  localstack-network:
+    driver: bridge
+volumes:
+  pgdata:
+

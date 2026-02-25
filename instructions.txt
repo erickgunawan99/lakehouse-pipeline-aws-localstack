@@ -1,0 +1,47 @@
+prerequisites:
+    - docker
+    - terraform
+    - python3
+    - aws cli
+    - wsl if on windows
+
+instructions:
+    - zip lambda.zip lambda.py
+    - mv lambda.zip ./terraform
+    - docker compose up -d
+    - cd terraform
+    - terraform init
+    - terraform apply (yes)
+    - back to root - cd ..
+    - check s3 bucket and lambda function logs
+        alias awslocal=aws --endpoint-url=http://localhost:4566
+        source .env
+        awslocal s3 ls (should see lakehouse-warehouse bucket)
+        awslocal logs describe-log-groups (should see /aws/lambda/iceberg-event-handler)
+        
+    - generate dummy data to s3 bucket (lakehouse-warehouse)
+        - python3 dummy.py
+    - check if lambda is triggered by the arrival of a new data in s3 bucket 
+        awslocal logs filter-log-events --log-group-name /aws/lambda/iceberg-event-handler
+        (should see a print message Flask Response: {\"status\":\"spark submitted\"}\n")
+    - monitor spark job from spark-master container or docker logs spark-master
+    - try to query iceberg table from trino
+        docker exec -it trino trino
+        SHOW TABLES FROM iceberg.lakehouse_events (should see enriched_events table)
+        SELECT * FROM iceberg.lakehouse_events.enriched_events LIMIT 10
+    - go to metabase http://localhost:3000 , add trino as source
+        - add database
+        - starburst (trino) type
+        - leave connection string empty
+        - fill 'name' with anything you want
+        - host: trino
+        - port: 8080
+        - schema: lakehouse_events
+        - username: admin (since we dont set any credentials)
+        - leave password empty
+        - save
+    - select that database (the 'name' you picked) and you should see a drop down table enriched_events
+    - find segment to play around with visualization
+    - you can try to have something visualized then go back to your terminal and put another data
+        in s3 by running python3 dummy.py again that would automatically trigger the workflow
+        then go back to metabase UI to see if your chart is updated

@@ -1,0 +1,13 @@
+FROM apache/hive:4.0.0
+
+USER root
+RUN apt-get update && apt-get install -y curl && \
+    curl -sfL -o /opt/hive/lib/hadoop-aws-3.3.4.jar https://repo1.maven.org/maven2/org/apache/hadoop/hadoop-aws/3.3.4/hadoop-aws-3.3.4.jar && \
+    curl -sfL -o /opt/hive/lib/aws-java-sdk-bundle-1.12.549.jar https://repo1.maven.org/maven2/com/amazonaws/aws-java-sdk-bundle/1.12.549/aws-java-sdk-bundle-1.12.549.jar && \
+    chown hive:hive /opt/hive/lib/hadoop-aws-3.3.4.jar /opt/hive/lib/aws-java-sdk-bundle-1.12.549.jar && \
+    rm -rf /var/lib/apt/lists/*
+
+# NEW: Explicitly add them to the HADOOP_CLASSPATH
+ENV HADOOP_CLASSPATH="$HADOOP_CLASSPATH:/opt/hive/lib/hadoop-aws-3.3.4.jar:/opt/hive/lib/aws-java-sdk-bundle-1.12.549.jar"
+
+USER hive
